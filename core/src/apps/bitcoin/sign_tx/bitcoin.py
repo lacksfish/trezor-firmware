@@ -44,8 +44,7 @@ _MAX_SILENT_CHANGE_COUNT = const(2)
 
 class Bitcoin:
     async def signer(self) -> None:
-        # Add inputs to hash143 and h_confirmed and compute the sum of input amounts
-        # by requesting each previous transaction and checking its output amounts.
+        # Add inputs to hash143 and h_confirmed and compute the sum of input amounts.
         await self.step1_process_inputs()
 
         # Add outputs to hash143 and h_confirmed, confirm outputs and compute
@@ -55,9 +54,10 @@ class Bitcoin:
         # Check fee, confirm lock_time and total.
         await self.step3_confirm_tx()
 
-        # Verify external inputs which have already been signed or which come with
-        # a proof of non-ownership.
-        await self.step4_verify_external_inputs()
+        # Verify the transaction input amouns by requesting each previous transaction
+        # and checking its output amount. Verify external inputs which have already
+        # been signed or which come with a proof of non-ownership.
+        await self.step4_verify_inputs()
 
         # Check that inputs are unchanged. Serialize inputs and sign the non-segwit ones.
         await self.step5_serialize_inputs()
@@ -110,10 +110,9 @@ class Bitcoin:
         # legacy inputs in Step 5.
         self.h_confirmed = self.create_hash_writer()  # not a real tx hash
 
-        # h_external is used to make sure that the signed external inputs streamed for
-        # confirmation in Step 1 are the same as the ones streamed for verification
-        # in Step 3.
-        self.h_external = self.create_hash_writer()
+        # h_inputs is used to make sure that the inputs streamed for confirmation in
+        # Step 1 are the same as the ones streamed for verification in Step 4.
+        self.h_inputs = bytes()
 
         # BIP-0143 transaction hashing
         self.init_hash143()
@@ -127,7 +126,13 @@ class Bitcoin:
         for i in range(self.tx.inputs_count):
             # STAGE_REQUEST_1_INPUT in legacy
             txi = await helpers.request_tx_input(self.tx_req, i, self.coin)
+            if txi.amount is None:
+                raise wire.DataError("Missing amount field.")
+
             self.weight.add_input(txi)
+            self.hash143_add_input(txi)  # all inputs are included (non-segwit as well)
+            writers.write_tx_input_check(self.h_confirmed, txi)
+
             if input_is_segwit(txi):
                 self.segwit.add(i)
 
@@ -135,8 +140,9 @@ class Bitcoin:
                 self.external.add(i)
                 await self.process_external_input(txi)
             else:
-                progress.advance()
                 await self.process_internal_input(txi)
+
+        self.h_inputs = self.h_confirmed.get_digest()
 
     async def step2_confirm_outputs(self) -> None:
         for i in range(self.tx.outputs_count):
@@ -167,13 +173,16 @@ class Bitcoin:
         else:
             await helpers.confirm_joint_total(spending, total, self.coin)
 
-    async def step4_verify_external_inputs(self) -> None:
-        # should come out the same as h_external, checked before continuing
+    async def step4_verify_inputs(self) -> None:
+        # should come out the same as h_inputs, checked before continuing
         h_check = self.create_hash_writer()
 
-        for i in sorted(self.external):
+        for i in range(self.tx.inputs_count):
             progress.advance()
             txi = await helpers.request_tx_input(self.tx_req, i, self.coin)
+            if txi.amount is None:
+                raise wire.DataError("Missing amount field.")
+
             writers.write_tx_input_check(h_check, txi)
             prev_amount, script_pubkey = await self.get_prevtx_output(
                 txi.prev_hash, txi.prev_index
@@ -181,25 +190,11 @@ class Bitcoin:
             if prev_amount != txi.amount:
                 raise wire.DataError("Invalid amount specified")
 
-            if txi.ownership_proof:
-                if not verify_nonownership(
-                    txi.ownership_proof, script_pubkey, b"", self.keychain, self.coin
-                ):
-                    raise wire.DataError("Invalid external input")
-            else:
-                verifier = SignatureVerifier(
-                    script_pubkey, txi.script_sig, txi.witness, self.coin
-                )
-
-                verifier.ensure_hash_type(self.get_hash_type(txi))
-
-                tx_digest = await self.get_tx_digest(
-                    i, txi, verifier.public_keys, verifier.threshold, script_pubkey
-                )
-                verifier.verify(tx_digest)
+            if i in self.external:
+                await self.verify_external_input(i, txi, script_pubkey)
 
         # check that the inputs were the same as those streamed for confirmation
-        if self.h_external.get_digest() != h_check.get_digest():
+        if h_check.get_digest() != self.h_inputs:
             raise wire.ProcessError("Transaction has changed during signing")
 
     async def step5_serialize_inputs(self) -> None:
@@ -245,8 +240,6 @@ class Bitcoin:
     async def process_internal_input(self, txi: TxInputType) -> None:
         self.wallet_path.add_input(txi)
         self.multisig_fingerprint.add_input(txi)
-        writers.write_tx_input_check(self.h_confirmed, txi)
-        self.hash143_add_input(txi)  # all inputs are included (non-segwit as well)
 
         if not addresses.validate_full_path(txi.address_n, self.coin, txi.script_type):
             await helpers.confirm_foreign_address(txi.address_n)
@@ -254,22 +247,9 @@ class Bitcoin:
         if txi.script_type not in common.INTERNAL_INPUT_SCRIPT_TYPES:
             raise wire.DataError("Wrong input script type")
 
-        prev_amount, script_pubkey = await self.get_prevtx_output(
-            txi.prev_hash, txi.prev_index
-        )
-
-        if txi.amount is not None and prev_amount != txi.amount:
-            raise wire.DataError("Invalid amount specified")
-
-        self.total_in += prev_amount
+        self.total_in += txi.amount
 
     async def process_external_input(self, txi: TxInputType) -> None:
-        if txi.amount is None:
-            raise wire.DataError("Expected input with amount")
-
-        writers.write_tx_input_check(self.h_external, txi)
-        writers.write_tx_input_check(self.h_confirmed, txi)
-        self.hash143_add_input(txi)  # all inputs are included (non-segwit as well)
         self.total_in += txi.amount
         self.external_in += txi.amount
 
@@ -299,6 +279,26 @@ class Bitcoin:
             digest, _, _ = await self.get_legacy_tx_digest(i, script_pubkey)
             return digest
 
+    async def verify_external_input(
+        self, i: int, txi: TxInputType, script_pubkey: bytes
+    ) -> None:
+        if txi.ownership_proof:
+            if not verify_nonownership(
+                txi.ownership_proof, script_pubkey, bytes(), self.keychain, self.coin
+            ):
+                raise wire.DataError("Invalid external input")
+        else:
+            verifier = SignatureVerifier(
+                script_pubkey, txi.script_sig, txi.witness, self.coin
+            )
+
+            verifier.ensure_hash_type(self.get_hash_type(txi))
+
+            tx_digest = await self.get_tx_digest(
+                i, txi, verifier.public_keys, verifier.threshold, script_pubkey
+            )
+            verifier.verify(tx_digest)
+
     def on_negative_fee(self) -> None:
         raise wire.NotEnoughFunds("Not enough funds")
 
@@ -325,9 +325,6 @@ class Bitcoin:
         self.write_tx_input(self.serialized_tx, txi, script_sig)
 
     def sign_bip143_input(self, txi: TxInputType) -> Tuple[bytes, bytes]:
-        if txi.amount is None:
-            raise wire.DataError("Expected input with amount")
-
         self.wallet_path.check_input(txi)
         self.multisig_fingerprint.check_input(txi)
 
@@ -349,6 +346,8 @@ class Bitcoin:
     async def sign_segwit_input(self, i: int) -> None:
         # STAGE_REQUEST_SEGWIT_WITNESS in legacy
         txi = await helpers.request_tx_input(self.tx_req, i, self.coin)
+        if txi.amount is None:
+            raise wire.DataError("Missing amount field.")
 
         if not input_is_segwit(txi):
             raise wire.ProcessError("Transaction has changed during signing")
