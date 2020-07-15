@@ -302,10 +302,10 @@ storage test:
 # Hardware
 hardware legacy regular device test:
   stage: test
-  only:
-    - schedules  # nightly build
-    - /^legacy\//
-    - /^release\//
+#  only:
+#    - schedules  # nightly build
+#    - /^legacy\//
+#    - /^release\//
   tags:
     - tpmb
   dependencies:
