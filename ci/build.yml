@@ -104,7 +104,7 @@ core macos frozen regular build:
     - export NAME="trezor"
     - mkdir -p $NAME.app/Contents/{MacOS,libs}
     - cp -v core/build/unix/micropython $NAME.app/Contents/MacOS/$NAME
-#    - chmod +x $NAME.app/Contents/MacOS/$NAME
+    - chmod +x $NAME.app/Contents/MacOS/$NAME
     - dylibbundler -of -b -i /usr/lib/system -d $NAME.app/Contents/libs -x $NAME.app/Contents/MacOS/$NAME
   allow_failure: true
   artifacts:
