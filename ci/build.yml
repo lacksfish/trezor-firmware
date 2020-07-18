@@ -101,7 +101,7 @@ core macos frozen regular build:
 #  when: manual
   script:
     - nix-shell --run "pipenv run make -C core build_unix_frozen"
-    - export NAME="trezor-emu-regular-macos-$CORE_VERSION-$CI_COMMIT_SHORT_SHA"
+    - export NAME="trezor"
     - mkdir -p $NAME.app/Contents/{MacOS,libs}
     - cp -v core/build/unix/micropython $NAME.app/Contents/MacOS/$NAME
     - dylibbundler -of -b -i /usr/lib/system -d $NAME.app/Contents/libs -x $NAME.app/Contents/MacOS/$NAME
