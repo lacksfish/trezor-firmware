@@ -106,7 +106,7 @@ core macos frozen regular build:
     - mkdir -p $NAME.app/Contents/{MacOS,libs}
     - cp -v core/build/unix/micropython $NAME.app/Contents/MacOS/$NAME
     - chmod +x $NAME.app/Contents/MacOS/$NAME
-    - dylibbundler -of -b -i /usr/lib/system -d $NAME.app/Contents/libs -x $NAME.app/Contents/MacOS/$NAME -m main
+    - dylibbundler -of -b -i /usr/lib/system -d $NAME.app/Contents/libs -x "$NAME.app/Contents/MacOS/$NAME -m main"
   allow_failure: true
   artifacts:
     name: "$CI_JOB_NAME-$CI_COMMIT_SHORT_SHA"
