@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## 2.3.3 [Unreleased]
+
+### Changed
+- Running the frozen version of the emulator doesn't need arguments.  [#1115]
+
+
 ## 2.3.2 [Unreleased]
 
 _Most likely to be released on August 5th._
